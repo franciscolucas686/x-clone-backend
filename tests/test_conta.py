@@ -1,0 +1,135 @@
+"""Regras de conta: avatar, busca e troca de senha."""
+
+import pytest
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.urls import reverse
+
+pytestmark = pytest.mark.django_db
+
+
+def _imagem(nome="foto.png", content_type="image/png", tamanho=1024):
+    return SimpleUploadedFile(nome, b"x" * tamanho, content_type=content_type)
+
+
+class TestAvatar:
+    def test_cadastro_sem_foto_recebe_o_avatar_padrao(self, api, settings):
+        resposta = api.post(
+            reverse("register"),
+            {
+                "username": "semfoto",
+                "name": "Sem Foto",
+                "password": "SenhaForte123!",
+                "confirm_password": "SenhaForte123!",
+            },
+            format="json",
+        )
+
+        assert resposta.data["avatar_url"] == settings.DEFAULT_AVATAR_URL
+
+    def test_cadastro_sem_o_campo_name_nao_quebra(self, api):
+        """`validated_data['name']` levantava KeyError -> 500. `name` é opcional no
+        modelo, então o DRF o gera como required=False; nenhum teste pegava porque todos
+        mandavam o campo."""
+        resposta = api.post(
+            reverse("register"),
+            {
+                "username": "semnome",
+                "password": "SenhaForte123!",
+                "confirm_password": "SenhaForte123!",
+            },
+            format="json",
+        )
+
+        assert resposta.status_code == 201
+
+    def test_arquivo_que_nao_e_imagem_e_recusado(self, auth):
+        """O campo era FileField, não ImageField, e não havia checagem de tipo nenhuma."""
+        resposta = auth.patch(
+            reverse("profile"),
+            {
+                "avatar": SimpleUploadedFile(
+                    "virus.exe", b"MZ", content_type="application/x-msdownload"
+                )
+            },
+            format="multipart",
+        )
+
+        assert resposta.status_code == 415
+        assert resposta.data["code"] == "UNSUPPORTED_MEDIA_TYPE"
+
+    def test_imagem_grande_demais_e_recusada(self, auth):
+        from accounts.services import MAX_AVATAR_BYTES
+
+        resposta = auth.patch(
+            reverse("profile"),
+            {"avatar": _imagem(tamanho=MAX_AVATAR_BYTES + 1)},
+            format="multipart",
+        )
+
+        assert resposta.status_code == 413
+        assert resposta.data["code"] == "FILE_TOO_LARGE"
+
+    def test_sem_cloudinary_configurado_o_erro_e_claro(self, auth):
+        """Em desenvolvimento o Cloudinary nunca esteve configurado. Antes a exceção
+        subia crua do uploader e virava 500; agora o cliente recebe um código que sabe
+        traduzir."""
+        resposta = auth.patch(reverse("profile"), {"avatar": _imagem()}, format="multipart")
+
+        assert resposta.status_code == 503
+        assert resposta.data["code"] == "STORAGE_NOT_CONFIGURED"
+
+    def test_remover_o_avatar_volta_ao_padrao(self, auth, user, settings):
+        """Não havia como remover: o campo não aceitava nulo, e o botão do frontend só
+        limpava o preview local."""
+        user.avatar = "https://exemplo.test/foto-antiga.png"
+        user.save(update_fields=["avatar"])
+
+        resposta = auth.patch(reverse("profile"), {"avatar": ""}, format="multipart")
+
+        assert resposta.status_code == 200
+        assert resposta.data["avatar_url"] == settings.DEFAULT_AVATAR_URL
+
+
+class TestBuscaDeUsuarios:
+    def test_busca_acontece_no_servidor(self, auth, make_user):
+        """O ExplorerPage filtrava no cliente, sobre a página já carregada — com 10 itens
+        por página, buscar era procurar entre os 10 primeiros usuários do sistema."""
+        make_user(username="mariana", name="Mariana Silva")
+        for _ in range(15):
+            make_user()
+
+        resposta = auth.get(reverse("user-list"), {"search": "mariana"})
+
+        assert resposta.data["count"] == 1
+        assert resposta.data["results"][0]["username"] == "mariana"
+
+    def test_busca_tambem_casa_pelo_nome(self, auth, make_user):
+        make_user(username="jd", name="João Pedro")
+
+        resposta = auth.get(reverse("user-list"), {"search": "joão"})
+
+        assert resposta.data["count"] == 1
+
+
+class TestTrocaDeSenha:
+    def test_senha_fraca_e_recusada_na_troca(self, auth):
+        """O cadastro aplicava a cadeia de validadores do Django e a troca não: dava para
+        registrar com senha forte e depois trocá-la por "123"."""
+        resposta = auth.patch(
+            reverse("profile"),
+            {"password": "123", "confirm_password": "123"},
+            format="multipart",
+        )
+
+        assert resposta.status_code == 400
+
+    def test_senha_forte_e_aceita(self, auth, user):
+        resposta = auth.patch(
+            reverse("profile"),
+            {"password": "OutraSenhaForte456!", "confirm_password": "OutraSenhaForte456!"},
+            format="multipart",
+        )
+
+        assert resposta.status_code == 200
+        user.refresh_from_db()
+        assert user.check_password("OutraSenhaForte456!")
