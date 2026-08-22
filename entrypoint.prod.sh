@@ -1,64 +1,41 @@
 #!/bin/sh
+# Entrypoint de produção.
+#
+# NÃO roda seed. A versão anterior executava `python seed_data.py` a cada boot, e aquele
+# script começava apagando User, Post, Like, Comment e Follow — ou seja, todo deploy
+# destruía os dados reais. Popular banco de produção não é trabalho de entrypoint; se
+# algum dia for necessário, é uma execução manual, deliberada e pontual.
 set -e
 
-echo "🔍 Verificando se o banco de dados está disponível..."
+# Host e porta saem do mesmo `database_config` que o Django usa, em vez de lidos
+# direto do ambiente aqui. O motivo é concreto: com `DATABASE_URL` — que é o formato
+# entregue por Neon, Render e Supabase — a variável `DATABASE_HOST` não existe, e a
+# versão anterior abortava aqui, antes de o Django chegar a ler a URL.
+#
+# Reusar a função também impede o defeito clássico de dois parsers: um no shell e outro
+# no Python, discordando sobre a mesma string.
+DB_ENDPOINT=$(python -c "
+from backend.settings.env import database_config
+config = database_config(required=True)
+print(config['HOST'], config['PORT'])
+") || exit 1
 
-DB_HOST=${DATABASE_HOST:?DATABASE_HOST is not set!}
-DB_PORT=${DATABASE_PORT:-5432}
+DB_HOST=$(echo "$DB_ENDPOINT" | cut -d' ' -f1)
+DB_PORT=$(echo "$DB_ENDPOINT" | cut -d' ' -f2)
 
-echo "Usando host: $DB_HOST"
-echo "Usando porta: $DB_PORT"
-
+echo "Aguardando o banco de dados em $DB_HOST:$DB_PORT..."
 until nc -z "$DB_HOST" "$DB_PORT"; do
-  echo "⏳ Aguardando o banco de dados em $DB_HOST:$DB_PORT..."
   sleep 2
 done
+echo "Banco disponível."
 
-echo "✅ Banco de dados disponível!"
-
-echo "🚀 Aplicando migrações..."
+echo "Aplicando migrações..."
 python manage.py migrate --noinput
 
-if [ -n "${DJANGO_SUPERUSER_USERNAME:-}" ] && [ -n "${DJANGO_SUPERUSER_PASSWORD:-}" ]; then
-  echo "👑 Verificando/Atualizando superusuário..."
-  python manage.py shell <<PY
-from django.contrib.auth import get_user_model
-User = get_user_model()
-username = "${DJANGO_SUPERUSER_USERNAME}"
-password = "${DJANGO_SUPERUSER_PASSWORD}"
-name = "${DJANGO_SUPERUSER_NAME:-Administrator}"
+echo "Coletando arquivos estáticos..."
+python manage.py collectstatic --noinput
 
-user, created = User.objects.get_or_create(username=username)
-if created:
-    user.is_superuser = True
-    user.is_staff = True
-    user.set_password(password)
-    user.name = name
-    user.save()
-    print("✅ Superusuário criado com sucesso.")
-else:
-    updated = False
+python manage.py ensure_superuser
 
-    if user.first_name != name:
-        user.first_name = name
-        updated = True
-
-    if not user.check_password(password):
-        # Se quiser SEMPRE atualizar a senha:
-        user.set_password(password)
-        updated = True
-
-    if updated:
-        user.save()
-        print("🔄 Superusuário existente — atualizado.")
-    else:
-        print("ℹ️ Superusuário já existe e está atualizado.")
-PY
-fi
-
-echo "🌱 Executando seed_data.py e populando dados..."
-python seed_data.py
-
-echo "✅ Setup completo. Iniciando server..."
-
+echo "Iniciando servidor..."
 exec "$@"
