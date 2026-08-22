@@ -1,32 +1,54 @@
+# Stack local: Postgres + backend. Um comando só, a partir de um clone limpo:
+#
+#     cp .env.example .env && docker compose up
+#
 services:
   backend:
-    build:
-      context: .
+    build: .
     container_name: x_clone_backend
     entrypoint: ["/entrypoint.sh"]
     command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
     volumes:
       - .:/app
-      - ./media:/app/media
-      - ./media-seed:/app/media-seed
     ports:
       - "8000:8000"
     env_file:
       - ./.env
     environment:
       DJANGO_SETTINGS_MODULE: backend.settings.development
+      # Sobrescreve o DATABASE_HOST do .env de propósito. Aquele arquivo traz
+      # "localhost", que é o certo para quem roda `manage.py` na própria máquina —
+      # o caminho do README. Dentro da rede do compose o único nome que resolve é o
+      # do serviço, e uma variável não pode significar as duas coisas.
+      DATABASE_HOST: db
     depends_on:
-      - db
-    restart: always
+      db:
+        # `condition` e não só `depends_on: [db]`: sem ela o Compose considera o
+        # banco pronto assim que o contêiner sobe, não quando o Postgres aceita
+        # conexão. A diferença é a corrida que o loop `nc -z` do entrypoint existia
+        # para contornar.
+        condition: service_healthy
 
   db:
     image: postgres:16
     container_name: x_clone_db
-    env_file:
-      - ./.env
+    environment:
+      # Os nomes POSTGRES_* são exigidos pela imagem; os DATABASE_* são os que a
+      # aplicação lê. Mapeados aqui para que o .env tenha um esquema de nomes só.
+      POSTGRES_DB: ${DATABASE_NAME:-xclone_dev}
+      POSTGRES_USER: ${DATABASE_USER:-xclone}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-xclone}
+    ports:
+      # Exposto para que `manage.py` rodando na máquina alcance o mesmo banco do
+      # contêiner, sem subir um segundo Postgres.
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-xclone} -d ${DATABASE_NAME:-xclone_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
 volumes:
   postgres_data:

@@ -1,2 +1,11 @@
-django-debug-toolbar==5.2.0
-django-extensions==4.1
+# Dependências de desenvolvimento e CI. Instaladas por `make setup` e pelo workflow.
+#
+# O arquivo anterior listava django-debug-toolbar e django-extensions, que nunca
+# estiveram em INSTALLED_APPS e nunca eram instalados por Dockerfile nem por CI.
+
+pytest==8.4.2
+pytest-django==4.11.1
+pytest-cov==6.3.0
+
+# Lint e formatação numa ferramenta só, em vez de flake8 + black + isort.
+ruff==0.14.2
