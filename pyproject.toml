@@ -1,0 +1,66 @@
+# Configuração única das ferramentas de desenvolvimento do backend.
+#
+# Um arquivo só, em vez de pytest.ini + ruff.toml + setup.cfg: qualquer pessoa que
+# abre o projeto encontra lint, formatação e testes no mesmo lugar.
+
+[tool.pytest.ini_options]
+# Nomeado explicitamente, nunca herdado do ambiente. É a mesma regra que o manage.py
+# passou a seguir: o ambiente é escolhido por quem invoca o comando, e a suíte de
+# testes é sempre exercida contra as settings de desenvolvimento — não contra as de
+# produção, como acontecia quando o CI rodava `manage.py test` sem definir nada.
+DJANGO_SETTINGS_MODULE = "backend.settings.development"
+python_files = ["test_*.py"]
+# Uma suíte, um estilo. Havia duas: pytest em tests/ e APITestCase em accounts/tests.py,
+# posts/tests.py e followers/tests.py — exercitando os mesmos endpoints com as mesmas
+# asserções, em outra sintaxe e em inglês. Medido: 87% de cobertura com e sem as
+# duplicadas, diferença de um statement.
+testpaths = ["tests"]
+addopts = [
+    "--strict-markers",
+    "--reuse-db",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["*/migrations/*", ".venv"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes — pega import não usado, variável morta
+    "I",    # isort — ordem de import estável, fim do diff-ruído
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "DJ",   # regras específicas de Django
+    "T20",  # print() esquecido em código de aplicação
+]
+ignore = [
+    "E501",  # comprimento de linha: o formatter já cuida
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Os seeds e os entrypoints de management command falam com quem rodou o comando;
+# print() ali é a interface, não sujeira esquecida.
+"*/management/commands/*" = ["T20"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.coverage.run]
+source = ["accounts", "posts", "followers", "common", "backend"]
+omit = [
+    # Os próprios testes não são código de aplicação. Sem esta exclusão eles entram na
+    # conta e o número mede o tamanho da suíte, não o quanto ela cobre.
+    "*/tests.py",
+    "*/tests/*",
+    "*/migrations/*",
+    "*/conftest.py",
+    "backend/wsgi.py",
+    "backend/asgi.py",
+    "manage.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
