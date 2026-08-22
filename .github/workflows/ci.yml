@@ -1,78 +1,112 @@
-name: CI & Deploy to Render
+name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  # O gatilho que faltava. O workflow só rodava em `push` para main, e o histórico é
+  # cheio de "Merge pull request #NNN": nenhum PR jamais foi verificado antes do merge.
+  pull_request:
+    branches: [main]
+
+# Um push novo no mesmo PR cancela a execução anterior. Só em PR: cancelar uma
+# verificação de main pode deixar um commit sem status nenhum.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# O default do GitHub dá permissão de escrita ao token. Este workflow só precisa ler.
+permissions:
+  contents: read
 
 jobs:
   ci:
-    name: Run checks & tests
+    name: Lint, checks e testes
     runs-on: ubuntu-latest
+    # O default do GitHub é 360 minutos: um teste travado seguraria um runner por seis horas.
+    timeout-minutes: 15
+
     services:
       db:
-        image: postgres:15
+        image: postgres:16
         env:
           POSTGRES_DB: xclone_test
-          POSTGRES_USER: xclone_user
-          POSTGRES_PASSWORD: xclone_pass
-        ports:
-          - 5432:5432
+          POSTGRES_USER: xclone
+          POSTGRES_PASSWORD: xclone
+        ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U postgres -d postgres" 
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
+          --health-cmd "pg_isready -U xclone -d xclone_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     env:
+      # Nomeado explicitamente. Sem isto o manage.py escolhia produção e a suíte rodava
+      # sob as settings erradas, sem que nada indicasse.
+      DJANGO_SETTINGS_MODULE: backend.settings.development
       DATABASE_NAME: xclone_test
-      DATABASE_USER: xclone_user
-      DATABASE_PASSWORD: xclone_pass
+      DATABASE_USER: xclone
+      DATABASE_PASSWORD: xclone
       DATABASE_HOST: localhost
-      DATABASE_PORT: 5432
-
+      DATABASE_PORT: "5432"
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
-      - name: Install dependencies
+      - name: Instalar dependências
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          # requirements-dev.txt nunca era instalado, então lint e pytest não existiam no CI.
+          pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Wait for Postgres
+      - name: Lint e formatação
         run: |
-          echo "⏳ Waiting for Postgres to be ready..."
-          export PGPASSWORD=$DATABASE_PASSWORD
-          until pg_isready -h $DATABASE_HOST -p $DATABASE_PORT -U $DATABASE_USER; do
-            sleep 2
-          done
-          echo "✅ Postgres is ready!"
+          ruff check .
+          ruff format --check .
 
-      - name: Run tests
-        working-directory: .
+      - name: Checagens do Django
         run: |
-          python manage.py test
+          python manage.py check
+          # Falha se algum modelo mudou sem migração. A CheckConstraint prevent_self_follow
+          # ficou meses declarada no models.py e ausente do banco justamente por não haver
+          # esta verificação.
+          python manage.py makemigrations --check --dry-run
+
+      - name: Checagem de deploy
+        env:
+          DJANGO_SETTINGS_MODULE: backend.settings.production
+          SECRET_KEY: ${{ '0123456789abcdef0123456789abcdef0123456789abcdef0123456789' }}
+          ALLOWED_HOSTS: exemplo.com
+          DATABASE_HOST: localhost
+          CLOUDINARY_CLOUD_NAME: ci
+          CLOUDINARY_API_KEY: ci
+          CLOUDINARY_API_SECRET: ci
+          CORS_ALLOWED_ORIGINS: https://exemplo.com
+        run: python manage.py check --deploy
+
+      - name: Testes
+        run: pytest --cov=. --cov-report=term-missing
 
   deploy:
-    name: Deploy to Render
+    name: Deploy no Render
     needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - name: Trigger Render Deploy
+      - name: Disparar deploy
         env:
           RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
-          echo "Triggering deploy for Render service $RENDER_SERVICE_ID"
-          curl -s -X POST "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys" \
+          # --fail é o que faltava: com `curl -s` puro, o passo ficava verde mesmo quando
+          # o Render respondia 4xx ou 5xx, e um deploy recusado parecia bem-sucedido.
+          curl --fail --silent --show-error \
+            -X POST "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys" \
             -H "Authorization: Bearer ${RENDER_API_KEY}" \
             -H "Content-Type: application/json" \
             -d '{}'
