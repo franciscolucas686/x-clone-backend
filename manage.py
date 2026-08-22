@@ -3,10 +3,12 @@ import sys
 
 
 def main():
-    os.environ.setdefault(
-        "DJANGO_SETTINGS_MODULE",
-        os.getenv("DJANGO_SETTINGS_MODULE", "backend.settings.production")
-    )
+    # Default de desenvolvimento. Produção define DJANGO_SETTINGS_MODULE
+    # explicitamente (ver Dockerfile.prod). O default anterior era
+    # "backend.settings.production", o que fazia o `manage.py migrate` do README
+    # estourar em ImproperlyConfigured num clone novo e o CI rodar os testes sob
+    # settings de produção sem que nada indicasse isso.
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "backend.settings.development")
 
     try:
         from django.core.management import execute_from_command_line
