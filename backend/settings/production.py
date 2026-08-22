@@ -8,7 +8,7 @@ existe para tornar impossível.
 import os
 
 from .base import *  # noqa: F403
-from .env import MIN_SECRET_KEY_LENGTH, database_config, require, require_list
+from .env import MIN_SECRET_KEY_LENGTH, database_config, require, require_list, require_origin_list
 
 SECRET_KEY = require("SECRET_KEY", min_length=MIN_SECRET_KEY_LENGTH)
 
@@ -71,7 +71,7 @@ MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")  # noqa: F405
 # máquina de um visitante podia falar com a API real. Trocar de domínio também exigia
 # editar código e refazer deploy, em vez de mudar uma variável.
 CORS_ALLOW_ALL_ORIGINS = False
-CORS_ALLOWED_ORIGINS = require_list("CORS_ALLOWED_ORIGINS")
+CORS_ALLOWED_ORIGINS = require_origin_list("CORS_ALLOWED_ORIGINS")
 
 if "*" in CORS_ALLOWED_ORIGINS:
     from django.core.exceptions import ImproperlyConfigured

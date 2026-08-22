@@ -75,6 +75,19 @@ def require_list(name: str) -> list[str]:
     return values
 
 
+def require_origin_list(name: str) -> list[str]:
+    """Como `require_list`, mas para origens CORS: sem barra no fim.
+
+    Uma origem, por definição do próprio CORS, é só esquema + host + porta — nunca um
+    caminho. `django-cors-headers` recusa `"https://exemplo.com/"` com
+    `corsheaders.E014` e derruba o boot, mas é um erro fácil demais de cometer: colar a
+    URL direto da barra de endereços do navegador já vem com a barra. Normalizar aqui
+    evita o boot morrer por um caractere que não muda nada do que a variável deveria
+    dizer.
+    """
+    return [origem.rstrip("/") for origem in require_list(name)]
+
+
 def get_list(name: str, default: list[str] | None = None) -> list[str]:
     raw = get(name)
     if not raw:

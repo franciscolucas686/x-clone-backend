@@ -161,3 +161,24 @@ class TestConfiguracaoDoBanco:
 
         with pytest.raises(ImproperlyConfigured, match="DATABASE_NAME"):
             env.database_config(required=True)
+
+
+class TestListaDeOrigens:
+    """CORS_ALLOWED_ORIGINS com barra no fim derrubava o boot em produção com
+    corsheaders.E014: uma origem, por definição do CORS, é só esquema+host+porta, nunca
+    um caminho — e colar a URL da barra de endereços do navegador já vem com a barra."""
+
+    def test_remove_a_barra_do_fim(self, monkeypatch):
+        monkeypatch.setenv("ORIGENS", "https://exemplo.vercel.app/")
+
+        assert env.require_origin_list("ORIGENS") == ["https://exemplo.vercel.app"]
+
+    def test_sem_barra_nao_muda(self, monkeypatch):
+        monkeypatch.setenv("ORIGENS", "https://exemplo.vercel.app")
+
+        assert env.require_origin_list("ORIGENS") == ["https://exemplo.vercel.app"]
+
+    def test_funciona_com_varias_origens_separadas_por_virgula(self, monkeypatch):
+        monkeypatch.setenv("ORIGENS", "https://a.com/, https://b.com")
+
+        assert env.require_origin_list("ORIGENS") == ["https://a.com", "https://b.com"]
