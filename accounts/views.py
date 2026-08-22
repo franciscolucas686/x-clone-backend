@@ -1,65 +1,65 @@
-from rest_framework import generics, permissions, parsers
+from rest_framework import generics, parsers, permissions
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+
 from .models import User
+from .selectors import discoverable_users, users_with_stats
 from .serializers import RegisterSerializer, UserProfileSerializer
-from django.db.models import Exists, OuterRef
-from followers.models import Follow
+
 
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
+    # Sem limite, criar contas em massa não tem custo nenhum.
+    throttle_scope = "auth"
+
+
+class ThrottledTokenObtainPairView(TokenObtainPairView):
+    """Login com limite por IP.
+
+    Subclasse só para carregar o escopo: a view do simplejwt não declara nenhum, e sem
+    isso tentar senha por força bruta contra /token/ é ilimitado.
+    """
+
+    throttle_scope = "auth"
+
+
+class ThrottledTokenRefreshView(TokenRefreshView):
+    throttle_scope = "auth"
+
 
 class ProfileView(generics.RetrieveUpdateAPIView):
-    queryset = User.objects.all()
+    """Perfil do usuário autenticado.
+
+    `get_object` devolve `request.user`, então a URL não carrega id e não há como pedir o
+    perfil de outra pessoa por aqui.
+    """
+
     serializer_class = UserProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
-    
     parser_classes = [parsers.JSONParser, parsers.MultiPartParser, parsers.FormParser]
 
     def get_object(self):
-        return self.request.user
-    
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context["request"] = self.request
-        return context
+        # Passa pelo selector para que o próprio perfil traga as mesmas contagens que a
+        # listagem — antes elas vinham de method fields, uma query cada.
+        return users_with_stats(viewer=self.request.user).get(pk=self.request.user.pk)
 
-
-    def patch(self, request, *args, **kwargs):
-        
-        return self.partial_update(request, *args, **kwargs)
 
 class UserListView(generics.ListAPIView):
     serializer_class = UserProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        user = self.request.user
-
-        return (
-            User.objects
-            .exclude(id=user.id)
-            .exclude(is_superuser=True)          
-            .exclude(is_staff=True)       
-            .annotate(
-                is_following=Exists(
-                    Follow.objects.filter(follower=user, following=OuterRef('id'))
-                )
-            )
+        return discoverable_users(
+            viewer=self.request.user,
+            search=self.request.query_params.get("search", ""),
         )
-    
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context["request"] = self.request
-        return context
+
 
 class UserDetailView(generics.RetrieveAPIView):
-    queryset = User.objects.all()
     serializer_class = UserProfileSerializer
     lookup_field = "username"
     permission_classes = [permissions.IsAuthenticated]
 
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context["request"] = self.request
-        return context
+    def get_queryset(self):
+        return users_with_stats(viewer=self.request.user)
