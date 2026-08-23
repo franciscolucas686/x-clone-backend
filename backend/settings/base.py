@@ -66,6 +66,28 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
+# Este bloco não existia, e a ausência dele é que respondia pela lentidão do login.
+#
+# Sem `PASSWORD_HASHERS`, vale a lista default do Django — e o Django 5.2 subiu o PBKDF2
+# para 1.000.000 de iterações. Medido nesta máquina: `check_password` 266–283 ms por
+# login, `make_password` 275 ms. O cadastro pagava dois hashes (cria a senha, depois o
+# cliente entra), ~550 ms só de CPU. Com Argon2: ~48 ms para verificar, ~69 ms para criar.
+#
+# Argon2 é mais rápido **e** mais resistente que o PBKDF2 que substitui: o custo dele é em
+# memória (100 MiB por hash, `memory_cost` default), o que é justamente o que inviabiliza
+# o ataque em GPU. Vale saber do consumo antes de descobrir sob carga — com o throttle de
+# `10/min` em /token/ e /register/ (ver DEFAULT_THROTTLE_RATES abaixo) a conta fecha, mas
+# uma instância pequena não deve subir `WEB_CONCURRENCY` sem refazê-la.
+#
+# O PBKDF2 continua na lista, e não é decoração: é ele que lê os hashes já gravados. O
+# Django reescreve cada senha no formato do primeiro hasher no próximo login do dono, de
+# graça — sem migração, sem reset e sem invalidar ninguém.
+PASSWORD_HASHERS = [
+    "django.contrib.auth.hashers.Argon2PasswordHasher",
+    "django.contrib.auth.hashers.PBKDF2PasswordHasher",
+    "django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher",
+]
+
 
 STATIC_URL = "/static/"
 

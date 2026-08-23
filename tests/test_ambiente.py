@@ -182,3 +182,30 @@ class TestListaDeOrigens:
         monkeypatch.setenv("ORIGENS", "https://a.com/, https://b.com")
 
         assert env.require_origin_list("ORIGENS") == ["https://a.com", "https://b.com"]
+
+
+class TestHasherDeSenha:
+    """O hasher de produção, afirmado lendo o módulo de settings direto.
+
+    A suíte roda sob MD5 (ver a fixture `_hasher_rapido` em conftest.py), então
+    `django.conf.settings.PASSWORD_HASHERS` mente aqui de propósito. Ler
+    `backend.settings.base` é o que faz este teste enxergar o que produção usa de verdade
+    — sem isso a fixture mascararia justamente a regressão que o teste existe para pegar.
+    """
+
+    def test_argon2_e_o_primeiro(self):
+        """Não havia `PASSWORD_HASHERS` no projeto, então valia o default do Django 5.2:
+        PBKDF2 com 1.000.000 de iterações, medido em 266-283 ms por login. O primeiro da
+        lista é o que assina as senhas novas; se alguém reordenar, o login volta a custar
+        cinco vezes mais sem nada indicar."""
+        from backend.settings import base
+
+        assert base.PASSWORD_HASHERS[0].endswith("Argon2PasswordHasher")
+
+    def test_pbkdf2_continua_na_lista(self):
+        """É ele que lê os hashes já gravados. Removê-lo tranca para fora todo mundo que
+        ainda não entrou desde a troca — o Django só reescreve a senha no formato novo
+        durante um login bem-sucedido."""
+        from backend.settings import base
+
+        assert any(h.endswith("PBKDF2PasswordHasher") for h in base.PASSWORD_HASHERS)

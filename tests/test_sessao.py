@@ -1,18 +1,12 @@
 """Ciclo de vida da sessão: renovação, rotação e limite de tentativas."""
 
 import pytest
-from django.core.cache import cache
 from django.urls import reverse
 
 pytestmark = pytest.mark.django_db
 
-
-@pytest.fixture(autouse=True)
-def _limpa_o_balde_do_throttle():
-    """O throttle guarda o histórico no cache, que sobrevive entre testes."""
-    cache.clear()
-    yield
-    cache.clear()
+# A limpeza do cache do throttle é global agora — ver `_limpa_o_balde_do_throttle` em
+# conftest.py. Passou a valer para toda a suíte, não só para este arquivo.
 
 
 def _login(api, username, password="SenhaForte123!"):
