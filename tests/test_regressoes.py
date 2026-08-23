@@ -154,3 +154,35 @@ class TestAvataresDoSeed:
 
         user.refresh_from_db()
         assert user.avatar == f"{settings.LOCAL_MEDIA_BASE_URL}/media/avatars/user1.png"
+
+
+class TestGuardaDoResetDeProducao:
+    """`reset_producao` é a reativação deliberada, só para este portfólio, do mesmo tipo
+    de reset que o incidente acima descreve — mas atrás de uma variável própria
+    (RESET_DB_ON_DEPLOY), nunca ligada por acidente."""
+
+    def test_recusa_rodar_sem_a_variavel(self, db, monkeypatch, make_user):
+        from django.contrib.auth import get_user_model
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        monkeypatch.delenv("RESET_DB_ON_DEPLOY", raising=False)
+        make_user(username="preexistente")
+
+        with pytest.raises(CommandError, match="RESET_DB_ON_DEPLOY"):
+            call_command("reset_producao")
+
+        assert get_user_model().objects.filter(username="preexistente").exists()
+
+    def test_com_a_variavel_apaga_tudo_inclusive_superusuario(self, db, monkeypatch, make_user):
+        from django.contrib.auth import get_user_model
+        from django.core.management import call_command
+
+        User = get_user_model()
+        make_user(username="usuariocomum")
+        User.objects.create_superuser(username="admin", password="SenhaForte123!")
+
+        monkeypatch.setenv("RESET_DB_ON_DEPLOY", "true")
+        call_command("reset_producao")
+
+        assert User.objects.count() == 0

@@ -5,6 +5,12 @@
 # script começava apagando User, Post, Like, Comment e Follow — ou seja, todo deploy
 # destruía os dados reais. Popular banco de produção não é trabalho de entrypoint; se
 # algum dia for necessário, é uma execução manual, deliberada e pontual.
+#
+# O RESET abaixo é uma decisão diferente, e deliberada: este projeto é um portfólio, sem
+# usuário real a proteger, e o objetivo é que cada deploy devolva um banco limpo — quem
+# for testar percorre o caminho cadastro -> login. Por isso `reset_producao` só roda se
+# RESET_DB_ON_DEPLOY=true estiver setado no ambiente (ver common/management/commands/
+# reset_producao.py); sem a variável, o comportamento é o mesmo de antes.
 set -e
 
 # Host e porta saem do mesmo `database_config` que o Django usa, em vez de lidos
@@ -31,6 +37,11 @@ echo "Banco disponível."
 
 echo "Aplicando migrações..."
 python manage.py migrate --noinput
+
+if [ "$RESET_DB_ON_DEPLOY" = "true" ]; then
+  echo "RESET_DB_ON_DEPLOY=true — apagando dados de produção..."
+  python manage.py reset_producao
+fi
 
 echo "Coletando arquivos estáticos..."
 python manage.py collectstatic --noinput

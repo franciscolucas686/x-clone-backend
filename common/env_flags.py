@@ -15,3 +15,7 @@ def settings_module_is_production() -> bool:
 
 def seed_is_enabled() -> bool:
     return get_bool("RUN_SEED", default=False)
+
+
+def reset_on_deploy_is_enabled() -> bool:
+    return get_bool("RESET_DB_ON_DEPLOY", default=False)
