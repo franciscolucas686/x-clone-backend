@@ -1,11 +1,33 @@
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.validators import UnicodeUsernameValidator
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from common.errors import PasswordMismatch, UsernameAlreadyExists
 
 from .models import User
-from .services import default_avatar_url, upload_avatar
+from .services import default_avatar_url, issue_tokens, upload_avatar
+
+
+class AvatarUrlField(serializers.ReadOnlyField):
+    """URL do avatar, com o padrão resolvido na **leitura**.
+
+    `avatar == ""` é como o banco representa "nunca escolheu foto" — uma representação
+    para um estado, igual à decisão de `blank` sem `null` registrada em accounts/models.py.
+    A URL do avatar padrão é configuração (`settings.DEFAULT_AVATAR_URL`), e configuração
+    não se grava em cada linha.
+
+    Antes só o `create()` do registro injetava a URL padrão. Quem nascia por
+    `create_user`/`create_superuser` — o superusuário do admin, as factories dos testes,
+    um seed com arquivo faltando — ficava com `""`, e o frontend renderizava `<img src="">`
+    em sete dos oito lugares onde mostra avatar: nenhum deles tinha fallback.
+
+    Resolvendo aqui, trocar `DEFAULT_AVATAR_URL` passa a valer para todo mundo na hora,
+    sem migração de dados, e o contrato da API nunca devolve string vazia.
+    """
+
+    def to_representation(self, value):
+        return value or default_avatar_url()
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -17,11 +39,21 @@ class RegisterSerializer(serializers.ModelSerializer):
         max_length=150,
         validators=[UnicodeUsernameValidator()],
     )
-    password = serializers.CharField(write_only=True, validators=[validate_password])
+    # `validate_password` não é mais um validador de campo: preso ao campo, o Django o
+    # chama sem o argumento `user`, e o UserAttributeSimilarityValidator (que compara a
+    # senha com username/name/email) faz `if not user: return` e nunca reprova nada — a
+    # cadeia declarada em AUTH_PASSWORD_VALIDATORS ficava três quartos aplicada. Chamado
+    # em validate(), com o usuário em construção, os quatro validadores valem.
+    password = serializers.CharField(write_only=True)
     confirm_password = serializers.CharField(write_only=True)
     avatar = serializers.FileField(required=False, allow_null=True, write_only=True)
-    avatar_url = serializers.CharField(required=False, source="avatar", read_only=True)
+    avatar_url = AvatarUrlField(source="avatar")
     joined_display = serializers.SerializerMethodField()
+
+    # Aditivo: o par de tokens do usuário recém-criado, para o cliente não precisar
+    # chamar /token/ logo depois de /register/ e pagar um segundo hash de senha. Um
+    # cliente que não leia este campo continua funcionando exatamente como antes.
+    tokens = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -34,10 +66,14 @@ class RegisterSerializer(serializers.ModelSerializer):
             "avatar",
             "avatar_url",
             "joined_display",
+            "tokens",
         ]
 
     def get_joined_display(self, obj) -> str:
         return obj.date_joined.strftime("%d/%m/%Y")
+
+    def get_tokens(self, obj) -> dict:
+        return issue_tokens(obj)
 
     def validate_username(self, value):
         """Unicidade como erro de domínio, não como erro de validação genérico.
@@ -56,6 +92,15 @@ class RegisterSerializer(serializers.ModelSerializer):
     def validate(self, data):
         if data["password"] != data["confirm_password"]:
             raise PasswordMismatch(details={"confirm_password": ["As senhas não coincidem."]})
+
+        # Usuário só em memória, nunca salvo: é o bastante para o
+        # UserAttributeSimilarityValidator comparar a senha com username/name.
+        candidato = User(username=data.get("username", ""), name=data.get("name", ""))
+        try:
+            validate_password(data["password"], user=candidato)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"password": exc.messages}) from exc
+
         return data
 
     def create(self, validated_data):
@@ -74,8 +119,14 @@ class RegisterSerializer(serializers.ModelSerializer):
         # atribuía o objeto de arquivo direto ao CharField, persistindo o nome do
         # arquivo em vez de uma URL — o avatar de quem se cadastrava com foto nunca
         # carregava.
-        user.avatar = upload_avatar(avatar, user=user) if avatar else default_avatar_url()
-        user.save(update_fields=["avatar"])
+        #
+        # Sem foto, nada é gravado: `avatar` fica "" e o AvatarUrlField resolve o padrão na
+        # leitura. Gravar a URL padrão aqui deixava uma cópia da configuração em cada linha
+        # e apagava a diferença entre "escolheu esta foto" e "não escolheu nenhuma" — que é
+        # o que a edição de perfil precisa saber para oferecer o botão de remover.
+        if avatar:
+            user.avatar = upload_avatar(avatar, user=user)
+            user.save(update_fields=["avatar"])
         return user
 
 
@@ -85,9 +136,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
     # `validate_password` também aqui. O cadastro aplicava a cadeia de validadores do
     # Django e a **troca de senha não**: dava para registrar com senha forte e depois
     # trocá-la por "123" pelo perfil. A regra valia só na porta da frente.
-    password = serializers.CharField(
-        write_only=True, required=False, validators=[validate_password]
-    )
+    # Mesmo motivo do RegisterSerializer: preso ao campo, validate_password roda sem
+    # `user` e o UserAttributeSimilarityValidator não faz nada. Aqui `self.instance` já é
+    # o usuário de verdade, então nem precisa de um objeto provisório.
+    password = serializers.CharField(write_only=True, required=False)
     confirm_password = serializers.CharField(write_only=True, required=False)
 
     # `allow_null` para que o cliente possa **remover** a foto e voltar ao avatar
@@ -95,7 +147,15 @@ class UserProfileSerializer(serializers.ModelSerializer):
     # local, porque o thunk filtrava valores vazios do FormData e o campo nunca chegava
     # ao servidor.
     avatar = serializers.FileField(required=False, allow_null=True, write_only=True)
-    avatar_url = serializers.CharField(required=False, source="avatar", read_only=True)
+    avatar_url = AvatarUrlField(source="avatar")
+
+    # "Esta pessoa escolheu uma foto?" — o fato, em vez de o cliente deduzi-lo.
+    #
+    # O EditProfileModal decidia se mostrava o botão "remover foto" comparando a URL atual
+    # com a do avatar padrão. Para isso o frontend precisava conhecer essa URL, e ela
+    # acabou escrita à mão nos dois repositórios (accounts/serializers.py e config.ts),
+    # onde podiam divergir em silêncio: bastava trocar DEFAULT_AVATAR_URL de um lado.
+    has_custom_avatar = serializers.SerializerMethodField()
 
     # Lidos das anotações do selector (accounts/selectors.py), não recalculados aqui.
     # Como SerializerMethodField, cada um destes disparava uma query por usuário
@@ -120,7 +180,11 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "followers_count",
             "following_count",
             "posts_count",
+            "has_custom_avatar",
         ]
+
+    def get_has_custom_avatar(self, obj) -> bool:
+        return bool(obj.avatar)
 
     def get_joined_display(self, obj) -> str:
         # Method field de propósito: é formatação de data, não consulta. Os quatro que
@@ -134,6 +198,12 @@ class UserProfileSerializer(serializers.ModelSerializer):
         if (password or confirm_password) and password != confirm_password:
             raise PasswordMismatch(details={"confirm_password": ["As senhas não coincidem."]})
 
+        if password:
+            try:
+                validate_password(password, user=self.instance)
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError({"password": exc.messages}) from exc
+
         return data
 
     def update(self, instance, validated_data):
@@ -145,9 +215,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
         # impossível de expressar.
         if "avatar" in validated_data:
             arquivo = validated_data.pop("avatar")
-            instance.avatar = (
-                upload_avatar(arquivo, user=instance) if arquivo else default_avatar_url()
-            )
+            # Remover devolve o campo a "", o mesmo estado de quem nunca escolheu foto — e
+            # o AvatarUrlField resolve o padrão na leitura.
+            instance.avatar = upload_avatar(arquivo, user=instance) if arquivo else ""
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
@@ -160,7 +230,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
 
 class UserFeedSerializer(serializers.ModelSerializer):
-    avatar_url = serializers.CharField(source="avatar", read_only=True)
+    avatar_url = AvatarUrlField(source="avatar")
 
     class Meta:
         model = User

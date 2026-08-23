@@ -34,6 +34,16 @@ def test_registro_cria_usuario_e_devolve_201(api):
     assert resposta.data["username"] == "novousuario"
     # O avatar padrão é atribuído no create() do serializer, não pelo cliente.
     assert resposta.data["avatar_url"]
+    # `tokens` evita a segunda ida a /token/ e o segundo hash de senha que o cadastro
+    # pagava: o access token devolvido aqui já autentica, sem precisar logar de novo.
+    assert resposta.data["tokens"]["access"]
+    assert resposta.data["tokens"]["refresh"]
+
+    autenticado = api.get(
+        reverse("profile"), HTTP_AUTHORIZATION=f"Bearer {resposta.data['tokens']['access']}"
+    )
+    assert autenticado.status_code == 200
+    assert autenticado.data["username"] == "novousuario"
 
 
 def test_registro_recusa_senhas_diferentes(api):

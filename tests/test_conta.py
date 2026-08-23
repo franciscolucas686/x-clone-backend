@@ -26,6 +26,47 @@ class TestAvatar:
 
         assert resposta.data["avatar_url"] == settings.DEFAULT_AVATAR_URL
 
+    def test_cadastro_sem_foto_nao_grava_a_url_padrao_no_banco(self, api):
+        """A URL padrão é resolvida na leitura (AvatarUrlField), não gravada em cada
+        linha. Gravá-la apagaria o fato "nunca escolheu foto", que has_custom_avatar
+        precisa para o botão de remover no EditProfileModal."""
+        from django.contrib.auth import get_user_model
+
+        api.post(
+            reverse("register"),
+            {
+                "username": "semfotobanco",
+                "name": "Sem Foto",
+                "password": "SenhaForte123!",
+                "confirm_password": "SenhaForte123!",
+            },
+            format="json",
+        )
+
+        user = get_user_model().objects.get(username="semfotobanco")
+        assert user.avatar == ""
+
+    def test_usuario_sem_avatar_tem_has_custom_avatar_falso(self, auth, user):
+        resposta = auth.get(reverse("profile"))
+
+        assert resposta.data["has_custom_avatar"] is False
+
+    def test_autor_sem_avatar_no_feed_recebe_o_avatar_padrao(
+        self, auth, make_user, make_post, settings
+    ):
+        """UserFeedSerializer alimenta o autor de todo post e comentário. Antes só o
+        registro injetava o avatar padrão: um autor criado por `create_user` (a
+        factory dos testes, o superusuário do admin) ficava com avatar="" e o feed
+        devolvia `avatar_url: ""` — sete das oito telas que mostram avatar não têm
+        fallback, e renderizavam `<img src="">`."""
+        autor = make_user(avatar="")
+        make_post(user=autor)
+
+        resposta = auth.get(reverse("post-list-create"))
+
+        post_do_autor = next(p for p in resposta.data["results"] if p["user"]["id"] == autor.id)
+        assert post_do_autor["user"]["avatar_url"] == settings.DEFAULT_AVATAR_URL
+
     def test_cadastro_sem_o_campo_name_nao_quebra(self, api):
         """`validated_data['name']` levantava KeyError -> 500. `name` é opcional no
         modelo, então o DRF o gera como required=False; nenhum teste pegava porque todos
@@ -109,6 +150,50 @@ class TestBuscaDeUsuarios:
         resposta = auth.get(reverse("user-list"), {"search": "joão"})
 
         assert resposta.data["count"] == 1
+
+
+class TestSimilaridadeComOUsuario:
+    """UserAttributeSimilarityValidator compara a senha com username/name/email.
+
+    validate_password estava preso como validador de campo, chamado sem `user` — o
+    validador faz `if not user: return` e nunca reprovava nada. A cadeia declarada em
+    AUTH_PASSWORD_VALIDATORS ficava três quartos aplicada, em silêncio, nos dois
+    serializers.
+    """
+
+    def test_senha_parecida_com_username_e_recusada_no_cadastro(self, api):
+        resposta = api.post(
+            reverse("register"),
+            {
+                "username": "carlosmendes",
+                "name": "Carlos Mendes",
+                "password": "carlosmendes123",
+                "confirm_password": "carlosmendes123",
+            },
+            format="json",
+        )
+
+        assert resposta.status_code == 400
+        assert "password" in resposta.data["details"]
+
+    def test_senha_parecida_com_username_e_recusada_na_troca(self, auth, make_user):
+        # Senha e nome de usuário fixos, não derivados de `user.username`: o validador
+        # usa razão de similaridade (difflib), sensível a diferenças pequenas de
+        # comprimento — um sufixo dinâmico já deixou de ser "parecido o bastante" só por
+        # ganhar um caractere. "carlosmendes"/"carlosmendes123" é o par que a suíte já
+        # confirma que o Django recusa.
+        dono = make_user(username="carlosmendes2", name="Carlos Mendes")
+        api = auth
+        api.force_authenticate(user=dono)
+
+        resposta = api.patch(
+            reverse("profile"),
+            {"password": "carlosmendes2123", "confirm_password": "carlosmendes2123"},
+            format="multipart",
+        )
+
+        assert resposta.status_code == 400
+        assert "password" in resposta.data["details"]
 
 
 class TestTrocaDeSenha:

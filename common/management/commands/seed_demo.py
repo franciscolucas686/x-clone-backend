@@ -28,7 +28,6 @@ from django.db import transaction
 # referência no momento do import, e o Django carrega módulos de comando
 # preguiçosamente — o que torna o instante do import imprevisível e a função
 # impossível de substituir depois. Chamar através do módulo mantém a costura.
-from accounts.services import default_avatar_url
 from common import env_flags
 from followers.models import Follow
 from posts.models import Comment, Like, Post
@@ -134,15 +133,16 @@ class Command(BaseCommand):
         absoluta de onde o Django vai servi-lo em desenvolvimento (`static()` em
         `backend/urls.py`, ativo só com `DEBUG=True`).
 
-        Cai para `default_avatar_url()` se o arquivo de origem não existir — o mesmo
-        caminho que um cadastro sem foto usa, em vez de deixar o campo vazio.
+        Cai para "" se o arquivo de origem não existir — o mesmo estado de um cadastro sem
+        foto, e o AvatarUrlField resolve o avatar padrão na leitura. Antes gravava aqui a
+        URL padrão, o que espalhava uma cópia da configuração pelas linhas do seed.
         """
         origem = AVATAR_SEED_DIR / filename
         if not origem.exists():
             self.stdout.write(
                 self.style.WARNING(f"  avatar de seed ausente: {origem} — usando o padrão")
             )
-            return default_avatar_url()
+            return ""
 
         destino_dir = Path(settings.MEDIA_ROOT) / "avatars"
         destino_dir.mkdir(parents=True, exist_ok=True)

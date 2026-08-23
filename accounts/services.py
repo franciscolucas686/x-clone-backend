@@ -16,6 +16,7 @@ a edição de perfil gravava a URL de verdade. Agora há um caminho só.
 import logging
 
 from django.conf import settings
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from common.errors import (
     AvatarUploadFailed,
@@ -94,10 +95,28 @@ def upload_avatar(arquivo, *, user) -> str:
 
 
 def default_avatar_url() -> str:
-    """URL usada por quem se cadastra sem enviar foto.
+    """URL usada por quem não tem avatar (`avatar == ""`).
 
-    Constante compartilhada com o frontend (`VITE_DEFAULT_AVATAR_URL`). A string já
-    esteve escrita à mão nos dois repositórios: no meio do `create()` do serializer e em
-    `EditProfileModal.tsx`.
+    Só existe no backend: o frontend recebe `avatar_url` já resolvido por
+    `AvatarUrlField` (accounts/serializers.py) e nunca precisa desta constante. Antes a
+    string estava escrita à mão nos dois repositórios — aqui e em `EditProfileModal.tsx`
+    — e podia divergir em silêncio bastando trocar `DEFAULT_AVATAR_URL` de um lado.
     """
     return settings.DEFAULT_AVATAR_URL
+
+
+def issue_tokens(user) -> dict:
+    """Par de tokens para um usuário recém-criado.
+
+    Emitir token é operação com efeito externo — grava na tabela de rotação/blacklist do
+    simplejwt — por isso mora aqui e não no serializer, mesmo formulário do resto deste
+    módulo.
+
+    Existe para o cadastro parar de pagar duas idas ao servidor e dois hashes de senha:
+    antes, `RegisterSerializer.create()` só criava o usuário, e o cliente chamava
+    `/token/` logo em seguida para logar — pagando o custo de `check_password` (~50-70 ms
+    com Argon2, ~275 ms com o PBKDF2 anterior) de novo, sobre uma senha que acabara de
+    hashear em `create_user()`. `RefreshToken.for_user()` não confere senha nenhuma.
+    """
+    refresh = RefreshToken.for_user(user)
+    return {"access": str(refresh.access_token), "refresh": str(refresh)}
