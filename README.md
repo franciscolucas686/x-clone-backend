@@ -1,18 +1,34 @@
 # x-clone — backend
 
-API REST de uma rede social: contas, posts, curtidas, comentários e seguidores.
-Django 5.2 + Django REST Framework + PostgreSQL.
+API REST de uma rede social no estilo do X (Twitter): contas, posts, curtidas,
+comentários e seguidores. **Django 5.2 + Django REST Framework + PostgreSQL**, com
+JWT, upload de avatar via Cloudinary, contrato de erro único e 130+ testes automatizados.
 
-O frontend que consome esta API está em
-[`x-clone-frontend`](https://github.com/franciscolucas686/x-clone-frontend).
+Repositório irmão: o frontend que consome esta API está em
+[`x-clone-frontend`](https://github.com/franciscolucas686/x-clone-frontend) (React +
+TypeScript + Redux Toolkit).
+
+**Stack:** Python 3.12 · Django 5.2 · Django REST Framework · PostgreSQL · SimpleJWT ·
+Cloudinary · pytest · Docker · Ruff
 
 ---
 
-## Começando
+## O que funciona de verdade
 
-Requisitos: Docker (para o Postgres) e Python 3.12 **com suporte a venv**.
+Contas com JWT, perfis com avatar, posts, curtidas, comentários paginados,
+seguir/deixar de seguir, feed de quem você segue, busca de usuários. Documentação de
+API interativa e sempre atualizada, gerada do próprio código.
 
-Em Debian, Ubuntu e WSL o `python3-venv` não vem junto com o Python, e sem ele o
+**Não implementado:** mensagens diretas e notificações (as telas correspondentes no
+frontend são maquetes estáticas), editar/apagar post.
+
+---
+
+## Como rodar localmente (a partir do `git clone`)
+
+Pré-requisitos: **Docker** (para o Postgres) e **Python 3.12 com suporte a venv**.
+
+Em Debian, Ubuntu e WSL o `python3-venv` não vem junto do Python, e sem ele o
 `make setup` falha com `No module named pip` — mensagem que não menciona o pacote que
 falta. Para conferir: `python3 -m ensurepip --version`. Se acusar erro:
 
@@ -23,11 +39,14 @@ sudo apt update && sudo apt install -y python3-venv make
 O `python3-pip` do sistema não é necessário — o pip vive dentro do venv.
 
 ```bash
+git clone https://github.com/franciscolucas686/x-clone-backend.git
+cd x-clone-backend
+
 cp .env.example .env      # valores prontos, não precisa preencher nada
 docker compose up -d db   # sobe o Postgres
 make setup                # cria o venv e instala as dependências
 make migrate
-make seed                 # dados de demonstração (opcional)
+make seed                 # dados de demonstração (opcional, recomendado)
 make run
 ```
 
@@ -43,6 +62,10 @@ Para subir tudo em contêiner, incluindo a aplicação:
 cp .env.example .env && docker compose up
 ```
 
+Para testar a aplicação completa (front + back), suba também o
+[`x-clone-frontend`](https://github.com/franciscolucas686/x-clone-frontend) apontando
+para `http://localhost:8000/api/v1` — ele já vem configurado assim por padrão.
+
 ---
 
 ## Comandos
@@ -50,7 +73,7 @@ cp .env.example .env && docker compose up
 | Comando | O que faz |
 |---|---|
 | `make run` | Servidor de desenvolvimento |
-| `make test` | Suíte de testes (111 testes) |
+| `make test` | Suíte de testes |
 | `make test-cov` | Testes com relatório de cobertura |
 | `make lint` | Ruff, sem corrigir — é o que o CI roda |
 | `make lint-fix` | Ruff corrigindo e formatando |
@@ -90,32 +113,19 @@ declarado na própria URL; em produção o padrão é `require`.
 ```
 backend/settings/     base, development, production e env.py (validação fail-fast)
 common/               erros de domínio, exception handler, paginação, comandos
-  errors.py           DomainError + códigos estáveis
-  exception_handler.py  envelope único de erro
-  views.py            /healthz/ — alvo de keep-alive, sem tocar o banco
-  management/commands/  seed_demo, ensure_superuser
-accounts/  posts/
-  models.py           dados e invariantes (constraints no banco)
-  selectors.py        consultas de leitura, com as anotações
-  services.py         operações que mudam estado ou falam com o mundo externo
-  serializers.py      forma da entrada e da saída
-  views.py            HTTP: recebe, delega, responde
-followers/
-  models.py           a relação Follow e suas constraints
-  views.py            follow/unfollow — as consultas de leitura vivem em
-                       accounts/selectors.py, junto das contagens de perfil
+accounts/  posts/  followers/
 tests/                testes de ponta a ponta por assunto
 ```
 
-`selectors.py` e `services.py` são finos de propósito. Não há repositórios nem casos de
-uso: neste tamanho seriam cerimônia. Eles existem porque havia regra de negócio e chamada
-de rede dentro de serializers.
+A arquitetura é em camadas finas (`models` → `selectors` → `services` → `serializers` →
+`views`), sem repositórios nem casos de uso — o porquê de cada decisão está em
+[`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ---
 
 ## Contrato de erro
 
-Toda resposta de erro sai no mesmo formato:
+Toda resposta de erro sai no mesmo formato, **em português**:
 
 ```json
 {
@@ -133,7 +143,8 @@ traz os erros por campo, quando houver, para o formulário destacar o campo cert
 
 Os códigos estão em `common/errors.py` e são fixados por teste em
 `tests/test_contrato_de_erro.py`: mudá-los é uma decisão visível no diff, não um efeito
-colateral.
+colateral. As mensagens de validação padrão do Django/DRF (senha fraca, campo obrigatório
+etc.) também saem em português — `LANGUAGE_CODE = "pt-br"` em `backend/settings/base.py`.
 
 ---
 
@@ -167,6 +178,26 @@ deveria depender de versionamento.
 
 ---
 
+## Reset de dados em produção
+
+Decisão deliberada deste portfólio: sem usuário real a proteger, cada deploy pode
+devolver o banco **completamente limpo** — quem for testar o app publicado percorre o
+caminho normal de cadastro → login, em vez de encontrar dados de outra pessoa.
+
+Com `RESET_DB_ON_DEPLOY=true` definido no ambiente de produção, `entrypoint.prod.sh`
+roda `manage.py reset_producao` a cada deploy, logo após as migrações: apaga todos os
+usuários, posts, curtidas, comentários e follows (inclusive o superusuário, que
+`ensure_superuser` recria em seguida a partir das variáveis de ambiente). Sem a
+variável, nada é apagado.
+
+Isso é a reativação intencional de um comportamento que este mesmo projeto já removeu
+uma vez, depois de um incidente em que um reset incondicional a cada boot apagava dados
+reais (ver o cabeçalho de `entrypoint.prod.sh` e `common/management/commands/
+seed_demo.py`). A diferença agora é que é opt-in, documentado e serve a um propósito
+deliberado — um portfólio não tem dado real a perder.
+
+---
+
 ## Keep-alive em produção
 
 O plano gratuito do Render derruba o processo após 15 minutos sem tráfego. `GET
@@ -186,7 +217,7 @@ repositório — o que descreve exatamente um portfólio pronto.
 make test
 ```
 
-111 testes, organizados por assunto em `tests/`:
+130+ testes, organizados por assunto em `tests/`:
 
 | Arquivo | Cobre |
 |---|---|
@@ -194,10 +225,10 @@ make test
 | `test_contrato_de_erro.py` | O envelope e cada `code`, mais a montagem em v1 e nos aliases |
 | `test_consultas.py` | Contagem de queries — impede a volta dos N+1 |
 | `test_sessao.py` | Renovação, rotação de refresh e limite de tentativas |
-| `test_conta.py` | Avatar, busca e troca de senha |
+| `test_conta.py` | Avatar, busca, capitalização de nome e troca de senha |
 | `test_permissoes.py` | O que é público e o que exige conta, incluindo `/healthz/` |
 | `test_ambiente.py` | Validação das variáveis e o parse da `DATABASE_URL` |
-| `test_regressoes.py` | Defeitos específicos que não podem voltar (inclui os avatares do seed) |
+| `test_regressoes.py` | Defeitos específicos que não podem voltar (inclui o guard do reset de produção) |
 
 Os testes de `test_consultas.py` fixam o **número de queries** de cada listagem. Um N+1
 reintroduzido vira teste vermelho com o número exato, e não uma lentidão que alguém nota
@@ -205,11 +236,9 @@ meses depois.
 
 ---
 
-## Escopo
+## Sobre este projeto
 
-O que existe: contas, perfis, posts, curtidas, comentários paginados, seguir/deixar de
-seguir, feed de quem você segue, busca de usuários.
-
-O que **não** existe: mensagens diretas e notificações. As telas correspondentes no
-frontend são maquetes estáticas, e estão declaradas como tal no README de lá. Editar ou
-apagar um post também não existe.
+Escrito e documentado como portfólio: cada decisão relevante do código está comentada
+com o defeito concreto que ela substituiu, não com o que o código faz (isso já é
+possível ler no próprio código). O detalhe da arquitetura está em
+[`ARCHITECTURE.md`](./ARCHITECTURE.md).
