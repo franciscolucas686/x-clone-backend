@@ -196,6 +196,58 @@ class TestSimilaridadeComOUsuario:
         assert "password" in resposta.data["details"]
 
 
+class TestNomeCapitalizado:
+    """Primeira letra maiúscula em cada palavra do nome, exceto conectivos comuns em
+    nomes brasileiros (de, da, do, das, dos, e) quando não são a primeira palavra."""
+
+    @pytest.mark.parametrize(
+        "entrada,esperado",
+        [
+            ("joão da silva", "João da Silva"),
+            ("MARIA DE SOUZA DOS SANTOS", "Maria de Souza dos Santos"),
+            ("das neves oliveira", "Das Neves Oliveira"),
+            ("ana-beatriz e maria", "Ana-Beatriz e Maria"),
+            ("  francisco   lucas  ", "Francisco Lucas"),
+        ],
+    )
+    def test_cadastro_normaliza_o_nome(self, api, entrada, esperado):
+        resposta = api.post(
+            reverse("register"),
+            {
+                "username": f"user{abs(hash(entrada)) % 10_000}",
+                "name": entrada,
+                "password": "SenhaForte123!",
+                "confirm_password": "SenhaForte123!",
+            },
+            format="json",
+        )
+
+        assert resposta.status_code == 201
+        assert resposta.data["name"] == esperado
+
+    def test_edicao_de_perfil_normaliza_o_nome(self, auth, user):
+        resposta = auth.patch(reverse("profile"), {"name": "carlos dos santos"}, format="multipart")
+
+        assert resposta.status_code == 200
+        assert resposta.data["name"] == "Carlos dos Santos"
+        user.refresh_from_db()
+        assert user.name == "Carlos dos Santos"
+
+    def test_nome_vazio_continua_opcional(self, api):
+        resposta = api.post(
+            reverse("register"),
+            {
+                "username": "semnomecapitalizado",
+                "password": "SenhaForte123!",
+                "confirm_password": "SenhaForte123!",
+            },
+            format="json",
+        )
+
+        assert resposta.status_code == 201
+        assert resposta.data["name"] == ""
+
+
 class TestTrocaDeSenha:
     def test_senha_fraca_e_recusada_na_troca(self, auth):
         """O cadastro aplicava a cadeia de validadores do Django e a troca não: dava para

@@ -7,6 +7,7 @@ from common.errors import PasswordMismatch, UsernameAlreadyExists
 
 from .models import User
 from .services import default_avatar_url, issue_tokens, upload_avatar
+from .utils import capitalizar_nome
 
 
 class AvatarUrlField(serializers.ReadOnlyField):
@@ -88,6 +89,9 @@ class RegisterSerializer(serializers.ModelSerializer):
                 details={"username": ["Esse nome de usuário já está em uso."]}
             )
         return value
+
+    def validate_name(self, value):
+        return capitalizar_nome(value)
 
     def validate(self, data):
         if data["password"] != data["confirm_password"]:
@@ -190,6 +194,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
         # Method field de propósito: é formatação de data, não consulta. Os quatro que
         # foram removidos daqui custavam uma query cada, por usuário serializado.
         return obj.date_joined.strftime("%d/%m/%Y")
+
+    def validate_name(self, value):
+        return capitalizar_nome(value)
 
     def validate(self, data):
         password = data.get("password")
